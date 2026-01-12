@@ -1,279 +1,513 @@
-﻿<?php
-session_start();
-include 'db.php';
+<?php
+/**
+ * Secure Login System
+ * 
+ * Security Features:
+ * - SQL Injection Prevention (Prepared Statements)
+ * - CSRF Token Protection
+ * - Session Security
+ * - Rate Limiting
+ * - Password Hashing (bcrypt)
+ */
 
-// เคลียร์ Error เก่า
-$error_msg = "";
-if (isset($_SESSION['login_error'])) {
-    $error_msg = $_SESSION['login_error'];
-    unset($_SESSION['login_error']);
+// Start secure session
+if (session_status() === PHP_SESSION_NONE) {
+    session_start([
+        'cookie_httponly' => true,    // Prevent JavaScript access
+        'cookie_secure' => true,       // HTTPS only
+        'cookie_samesite' => 'Strict', // CSRF protection
+        'use_strict_mode' => true      // Strict session mode
+    ]);
 }
 
-// ถ้าล็อกอินค้างไว้แล้ว ให้เด้งไปหน้า Dashboard ตามสิทธิ์
-if (isset($_SESSION['role'])) {
-    if ($_SESSION['role'] == 'teacher') header("Location: index.php"); // 🟢 แก้เป็น index.php
-    else header("Location: student_dashboard.php");
-    exit();
+// Configuration
+define('DB_HOST', 'localhost');
+define('DB_USER', 'your_db_user');
+define('DB_PASS', 'your_db_password');
+define('DB_NAME', 'your_database');
+define('RATE_LIMIT_ATTEMPTS', 5);
+define('RATE_LIMIT_WINDOW', 900); // 15 minutes in seconds
+
+/**
+ * Generate CSRF Token
+ */
+function generateCSRFToken() {
+    if (empty($_SESSION['csrf_token'])) {
+        $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+    }
+    return $_SESSION['csrf_token'];
 }
 
-if (isset($_POST['login_btn'])) {
-    $role = $_POST['role']; // รับค่าจากปุ่มสลับ (student / teacher)
-    $password = trim($_POST['password']);
-
-    if ($role == 'teacher') {
-        // --- 1. ส่วนของคุณครู (ใช้รหัสผ่านอย่างเดียว) ---
-        // เช็คจากฐานข้อมูล tb_course_info (ตามโค้ดเดิมของคุณ)
-        $stmt = $conn->prepare("SELECT teacher_name, teacher_password FROM tb_course_info LIMIT 1");
-        $stmt->execute();
-        $result = $stmt->get_result();
-
-        if ($result->num_rows > 0) {
-            $row_teacher = $result->fetch_assoc();
-            // ตรวจสอบรหัสผ่าน (รองรับทั้ง Hash และ Plain Text เพื่อความยืดหยุ่น)
-            if (password_verify($password, $row_teacher['teacher_password']) || $password == $row_teacher['teacher_password']) {
-                session_regenerate_id(true);
-                $_SESSION['role'] = 'teacher';
-                $_SESSION['user_name'] = $row_teacher['teacher_name'];
-                
-                // 🟢 ส่งครูไปหน้า Dashboard (index.php)
-                header("Location: index.php"); 
-                exit();
-            } else {
-                $error_msg = "รหัสผ่านครูไม่ถูกต้อง";
-            }
-        } else {
-            // Fallback: กรณีฐานข้อมูลยังไม่มีข้อมูลครู ให้ใช้รหัสสำรอง '1234'
-            if($password == '1234') {
-                $_SESSION['role'] = 'teacher';
-                // 🟢 ส่งครูไปหน้า Dashboard (index.php)
-                header("Location: index.php");
-                exit();
-            }
-            $error_msg = "ไม่พบข้อมูลผู้สอนในระบบ";
-        }
-
-    } elseif ($role == 'student') {
-        // --- 2. ส่วนของนักเรียน (รหัสนักเรียน + รหัสผ่าน) ---
-        $username = trim($_POST['username']); // รับรหัสนักเรียน
-
-        $stmt = $conn->prepare("SELECT * FROM tb_students WHERE std_code = ? AND password = ?");
-        $stmt->bind_param("ss", $username, $password);
-        $stmt->execute();
-        $result = $stmt->get_result();
-
-        if ($result->num_rows > 0) {
-            $row = $result->fetch_assoc();
-            session_regenerate_id(true);
-            
-            $_SESSION['std_id'] = $row['id'];
-            $_SESSION['role'] = 'student';
-            $_SESSION['std_name'] = $row['firstname'] . ' ' . $row['lastname'];
-            
-            // 🛑 เช็คว่าเป็นรหัสเริ่มต้น "12345" หรือไม่?
-            if ($password == '12345') {
-                $_SESSION['force_change_pwd'] = true; // ติดธงว่าต้องเปลี่ยนรหัส
-                header("Location: force_change_pwd.php"); // ส่งไปหน้าบังคับเปลี่ยน
-            } else {
-                header("Location: student_dashboard.php");
-            }
-            exit();
-        } else {
-            $error_msg = "รหัสนักเรียน หรือ รหัสผ่าน ไม่ถูกต้อง";
-        }
+/**
+ * Validate CSRF Token
+ */
+function validateCSRFToken($token) {
+    if (empty($_SESSION['csrf_token']) || empty($token)) {
+        return false;
     }
+    return hash_equals($_SESSION['csrf_token'], $token);
 }
-?>
 
-<!DOCTYPE html>
-<html lang="th">
-<head>
-    <meta charset="UTF-8">
-    <title>Login - Classroom Management</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;600;700&family=Poppins:wght@400;600;800&display=swap" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-
-    <style>
-    :root {
-        --primary-color: #d63384; /* สีชมพูหลัก */
-        --glass-bg: rgba(255, 255, 255, 0.1);
-        --glass-border: rgba(255, 255, 255, 0.2);
-    }
-
-    body {
-        font-family: 'Sarabun', sans-serif;
-        background: radial-gradient(circle at top left, #1e1e2f, #0f0f1a);
-        height: 100vh;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        overflow: hidden;
-        position: relative;
-    }
-
-    /* --- Animated Background (Orbs) --- */
-    .bg-orb {
-        position: absolute; border-radius: 50%; filter: blur(60px); z-index: 0; opacity: 0.5;
-        animation: float 10s infinite alternate;
-    }
-    .orb-1 { width: 400px; height: 400px; background: #4f46e5; top: -100px; left: -100px; animation-delay: 0s; }
-    .orb-2 { width: 300px; height: 300px; background: var(--primary-color); bottom: -50px; right: -50px; animation-delay: 2s; }
-    .orb-3 { width: 200px; height: 200px; background: #00d4ff; top: 30%; left: 60%; opacity: 0.2; animation-delay: 4s; }
-
-    @keyframes float {
-        0% { transform: translate(0, 0) scale(1); }
-        100% { transform: translate(20px, 40px) scale(1.05); }
-    }
-
-    /* --- Glass Card --- */
-    .login-card {
-        background: var(--glass-bg);
-        backdrop-filter: blur(25px); -webkit-backdrop-filter: blur(25px);
-        width: 100%; max-width: 420px;
-        border-radius: 24px; border: 1px solid var(--glass-border);
-        box-shadow: 0 15px 35px rgba(0,0,0,0.2);
-        padding: 40px 35px; position: relative; z-index: 10; text-align: center;
-    }
-
-    /* --- Role Switcher (New Style) --- */
-    .role-switch {
-        display: flex; background: rgba(0,0,0,0.2); border-radius: 50px;
-        padding: 5px; margin-bottom: 25px; border: 1px solid var(--glass-border);
-    }
-    .role-btn {
-        flex: 1; text-align: center; padding: 10px; border-radius: 50px;
-        cursor: pointer; color: rgba(255,255,255,0.6); font-weight: 600; transition: 0.3s;
-        font-family: 'Poppins', sans-serif; font-size: 0.9rem;
-    }
-    .role-btn:hover { color: white; }
-    .role-btn.active {
-        background: var(--primary-color); color: white;
-        box-shadow: 0 4px 15px rgba(214, 51, 132, 0.4);
-    }
-
-    /* --- Logo & Text --- */
-    .logo-container {
-        width: 90px; height: 90px;
-        background: rgba(255,255,255,0.9); border-radius: 50%;
-        display: flex; align-items: center; justify-content: center;
-        margin: 0 auto 15px; border: 4px solid rgba(255,255,255,0.1);
-        box-shadow: 0 4px 15px rgba(0,0,0,0.1); padding: 10px;
-    }
-    .logo-container img { width: 100%; height: 100%; object-fit: contain; }
-
-    .app-name { font-family: 'Poppins', sans-serif; font-weight: 700; font-size: 1.3rem; color: white; margin-bottom: 5px; }
-    .school-name { color: rgba(255,255,255,0.7); font-size: 0.85rem; margin-bottom: 25px; }
-
-    /* --- Form Elements --- */
-    .form-control-neon {
-        background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2);
-        border-radius: 50px; color: white; padding: 12px 20px;
-        text-align: center; font-size: 1rem; transition: 0.3s;
-    }
-    .form-control-neon:focus {
-        background: rgba(255,255,255,0.2); border-color: var(--primary-color);
-        box-shadow: 0 0 0 4px rgba(214, 51, 132, 0.2); color: white; outline: none;
-    }
-    .form-control-neon::placeholder { color: rgba(255,255,255,0.5); }
-
-    .btn-login-neon {
-        background: linear-gradient(90deg, #d63384, #be185d); border: none;
-        width: 100%; padding: 12px; border-radius: 50px; color: white;
-        font-weight: 700; font-size: 1rem; margin-top: 10px;
-        box-shadow: 0 4px 15px rgba(214, 51, 132, 0.4); transition: 0.3s;
-    }
-    .btn-login-neon:hover {
-        transform: translateY(-2px); box-shadow: 0 8px 25px rgba(214, 51, 132, 0.5);
-    }
-
-    .alert-error {
-        background: rgba(220, 53, 69, 0.2); border: 1px solid rgba(220, 53, 69, 0.3);
-        color: #ff8686; border-radius: 15px; font-size: 0.9rem; margin-bottom: 20px;
+/**
+ * Check Rate Limiting
+ */
+function checkRateLimit($identifier) {
+    $key = 'rate_limit_' . md5($identifier);
+    
+    if (!isset($_SESSION[$key])) {
+        $_SESSION[$key] = [
+            'attempts' => 0,
+            'first_attempt' => time()
+        ];
     }
     
-    .footer-credit { position: absolute; bottom: 15px; width: 100%; text-align: center; color: rgba(255,255,255,0.2); font-size: 0.75rem; }
-    </style>
-</head>
-<body>
+    $window = time() - $_SESSION[$key]['first_attempt'];
+    
+    // Reset if outside time window
+    if ($window > RATE_LIMIT_WINDOW) {
+        $_SESSION[$key] = [
+            'attempts' => 0,
+            'first_attempt' => time()
+        ];
+    }
+    
+    // Check if limit exceeded
+    if ($_SESSION[$key]['attempts'] >= RATE_LIMIT_ATTEMPTS) {
+        return false;
+    }
+    
+    $_SESSION[$key]['attempts']++;
+    return true;
+}
 
-    <div class="bg-orb orb-1"></div>
-    <div class="bg-orb orb-2"></div>
-    <div class="bg-orb orb-3"></div>
+/**
+ * Hash Password
+ */
+function hashPassword($password) {
+    return password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]);
+}
 
-    <div class="login-card">
-        <div class="logo-container">
-            <img src="images/logo.png" alt="Logo" onerror="this.src='https://cdn-icons-png.flaticon.com/512/2995/2995620.png'">
-        </div>
+/**
+ * Verify Password
+ */
+function verifyPassword($password, $hash) {
+    return password_verify($password, $hash);
+}
 
-        <div class="app-name">Classroom Management</div>
-        <div class="school-name">Bansuanjananusorn School</div>
+/**
+ * Get Database Connection (PDO for prepared statements)
+ */
+function getDBConnection() {
+    try {
+        $dsn = 'mysql:host=' . DB_HOST . ';dbname=' . DB_NAME . ';charset=utf8mb4';
+        $pdo = new PDO($dsn, DB_USER, DB_PASS, [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_EMULATE_PREPARES => false,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC
+        ]);
+        return $pdo;
+    } catch (PDOException $e) {
+        error_log('Database connection failed: ' . $e->getMessage());
+        die('Database connection error. Please try again later.');
+    }
+}
 
-        <?php if($error_msg != ""): ?>
-            <div class="alert alert-error text-center py-2">
-                <i class="fa-solid fa-circle-exclamation me-1"></i> <?php echo $error_msg; ?>
-            </div>
-        <?php endif; ?>
+/**
+ * Authenticate User (SQL Injection Safe)
+ */
+function authenticateUser($username, $password) {
+    try {
+        $pdo = getDBConnection();
+        
+        // Prepared statement prevents SQL injection
+        $stmt = $pdo->prepare('SELECT id, username, password_hash, email FROM users WHERE username = ? LIMIT 1');
+        $stmt->execute([$username]);
+        
+        $user = $stmt->fetch();
+        
+        if ($user && verifyPassword($password, $user['password_hash'])) {
+            return $user;
+        }
+        
+        return false;
+    } catch (PDOException $e) {
+        error_log('Authentication error: ' . $e->getMessage());
+        return false;
+    }
+}
 
-        <form method="POST" id="loginForm">
-            <input type="hidden" name="role" id="roleInput" value="student">
+/**
+ * Register User (SQL Injection Safe)
+ */
+function registerUser($username, $email, $password) {
+    try {
+        $pdo = getDBConnection();
+        
+        // Check if username already exists
+        $checkStmt = $pdo->prepare('SELECT id FROM users WHERE username = ? LIMIT 1');
+        $checkStmt->execute([$username]);
+        
+        if ($checkStmt->fetch()) {
+            return ['success' => false, 'message' => 'Username already exists'];
+        }
+        
+        // Check if email already exists
+        $checkStmt = $pdo->prepare('SELECT id FROM users WHERE email = ? LIMIT 1');
+        $checkStmt->execute([$email]);
+        
+        if ($checkStmt->fetch()) {
+            return ['success' => false, 'message' => 'Email already exists'];
+        }
+        
+        // Hash password and insert user
+        $passwordHash = hashPassword($password);
+        $stmt = $pdo->prepare('INSERT INTO users (username, email, password_hash, created_at) VALUES (?, ?, ?, NOW())');
+        $stmt->execute([$username, $email, $passwordHash]);
+        
+        return ['success' => true, 'message' => 'User registered successfully'];
+    } catch (PDOException $e) {
+        error_log('Registration error: ' . $e->getMessage());
+        return ['success' => false, 'message' => 'Registration failed. Please try again later.'];
+    }
+}
 
-            <div class="role-switch">
-                <div class="role-btn active" id="tabStudent" onclick="switchRole('student')">
-                    <i class="fa-solid fa-user-graduate me-1"></i> นักเรียน
-                </div>
-                <div class="role-btn" id="tabTeacher" onclick="switchRole('teacher')">
-                    <i class="fa-solid fa-chalkboard-user me-1"></i> คุณครู
-                </div>
-            </div>
+/**
+ * Sanitize Input
+ */
+function sanitizeInput($input) {
+    return htmlspecialchars(trim($input), ENT_QUOTES, 'UTF-8');
+}
 
-            <div id="studentFields">
-                <div class="mb-3 position-relative">
-                    <i class="fa-solid fa-id-card position-absolute text-white-50" style="top: 15px; left: 20px;"></i>
-                    <input type="text" name="username" class="form-control form-control-neon ps-5" 
-                           placeholder="รหัสนักเรียน (5 หลัก)" autocomplete="off">
-                </div>
-            </div>
-
-            <div class="mb-4 position-relative">
-                <i class="fa-solid fa-lock position-absolute text-white-50" style="top: 15px; left: 20px;"></i>
-                <input type="password" name="password" class="form-control form-control-neon ps-5" 
-                       placeholder="รหัสผ่าน" required autocomplete="off">
-            </div>
-
-            <button type="submit" name="login_btn" class="btn-login-neon">
-                เข้าสู่ระบบ
-            </button>
-        </form>
-    </div>
-
-    <div class="footer-credit">&copy; <?php echo date("Y"); ?> Digital Classroom System</div>
-
-    <script>
-        function switchRole(role) {
-            // อัปเดตค่า role ใน input hidden
-            document.getElementById('roleInput').value = role;
-
-            // สลับ Class Active ของปุ่ม
-            if (role === 'student') {
-                document.getElementById('tabStudent').classList.add('active');
-                document.getElementById('tabTeacher').classList.remove('active');
-                
-                // แสดงช่องรหัสนักเรียน
-                document.getElementById('studentFields').style.display = 'block';
-                document.querySelector('input[name="password"]').placeholder = "รหัสผ่าน";
-                document.querySelector('input[name="username"]').required = true;
-            } else {
-                document.getElementById('tabTeacher').classList.add('active');
-                document.getElementById('tabStudent').classList.remove('active');
-                
-                // ซ่อนช่องรหัสนักเรียน
-                document.getElementById('studentFields').style.display = 'none';
-                document.querySelector('input[name="password"]').placeholder = "รหัสผ่านสำหรับครู";
-                document.querySelector('input[name="username"]').required = false;
+/**
+ * Login Handler
+ */
+function handleLogin() {
+    $errors = [];
+    
+    // Check CSRF token
+    if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+        if (empty($_POST['csrf_token']) || !validateCSRFToken($_POST['csrf_token'])) {
+            $errors[] = 'Invalid security token. Please try again.';
+        }
+    }
+    
+    if (empty($errors) && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        $username = sanitizeInput($_POST['username'] ?? '');
+        $password = $_POST['password'] ?? '';
+        $rememberMe = isset($_POST['remember_me']);
+        
+        // Validate input
+        if (empty($username) || empty($password)) {
+            $errors[] = 'Username and password are required';
+        }
+        
+        if (empty($errors)) {
+            // Check rate limiting using IP address
+            $clientIP = $_SERVER['REMOTE_ADDR'];
+            if (!checkRateLimit($clientIP)) {
+                $errors[] = 'Too many login attempts. Please try again in 15 minutes.';
             }
         }
-    </script>
+        
+        if (empty($errors)) {
+            $user = authenticateUser($username, $password);
+            
+            if ($user) {
+                // Regenerate session ID to prevent session fixation
+                session_regenerate_id(true);
+                
+                // Set session variables
+                $_SESSION['user_id'] = $user['id'];
+                $_SESSION['username'] = $user['username'];
+                $_SESSION['email'] = $user['email'];
+                $_SESSION['login_time'] = time();
+                $_SESSION['ip_address'] = $_SERVER['REMOTE_ADDR'];
+                $_SESSION['user_agent'] = $_SERVER['HTTP_USER_AGENT'];
+                
+                // Set remember me cookie (if requested)
+                if ($rememberMe) {
+                    $token = bin2hex(random_bytes(32));
+                    // Store token in database linked to user
+                    // Set secure cookie
+                    setcookie('remember_token', $token, time() + (30 * 24 * 60 * 60), '/', '', true, true);
+                }
+                
+                return ['success' => true, 'message' => 'Login successful'];
+            } else {
+                $errors[] = 'Invalid username or password';
+            }
+        }
+    }
+    
+    return ['success' => false, 'errors' => $errors];
+}
 
-</body>
-</html>
+/**
+ * Verify Session Security
+ */
+function verifySessionSecurity() {
+    // Check if session variables exist
+    if (empty($_SESSION['user_id'])) {
+        return false;
+    }
+    
+    // Verify IP address hasn't changed (optional, but recommended)
+    if ($_SESSION['ip_address'] !== $_SERVER['REMOTE_ADDR']) {
+        error_log('Session hijacking attempt detected for user: ' . $_SESSION['user_id']);
+        return false;
+    }
+    
+    // Verify user agent hasn't changed (optional)
+    if ($_SESSION['user_agent'] !== $_SERVER['HTTP_USER_AGENT']) {
+        return false;
+    }
+    
+    // Check session timeout (30 minutes)
+    if (time() - $_SESSION['login_time'] > 1800) {
+        return false;
+    }
+    
+    return true;
+}
+
+/**
+ * Logout Handler
+ */
+function handleLogout() {
+    // Unset all session variables
+    $_SESSION = array();
+    
+    // Delete session cookie
+    if (ini_get('session.use_cookies')) {
+        $params = session_get_cookie_params();
+        setcookie(
+            session_name(),
+            '',
+            time() - 42000,
+            $params['path'],
+            $params['domain'],
+            $params['secure'],
+            $params['httponly']
+        );
+    }
+    
+    // Destroy session
+    session_destroy();
+    
+    return ['success' => true, 'message' => 'Logged out successfully'];
+}
+
+/**
+ * HTML Login Form
+ */
+function displayLoginForm() {
+    $csrfToken = generateCSRFToken();
+    ?>
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Secure Login</title>
+        <style>
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+            
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                min-height: 100vh;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+            }
+            
+            .container {
+                background: white;
+                padding: 40px;
+                border-radius: 10px;
+                box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+                width: 100%;
+                max-width: 400px;
+            }
+            
+            h1 {
+                text-align: center;
+                color: #333;
+                margin-bottom: 30px;
+                font-size: 28px;
+            }
+            
+            .form-group {
+                margin-bottom: 20px;
+            }
+            
+            label {
+                display: block;
+                margin-bottom: 8px;
+                color: #555;
+                font-weight: 500;
+            }
+            
+            input[type="text"],
+            input[type="password"] {
+                width: 100%;
+                padding: 12px;
+                border: 1px solid #ddd;
+                border-radius: 5px;
+                font-size: 14px;
+                transition: border-color 0.3s;
+            }
+            
+            input[type="text"]:focus,
+            input[type="password"]:focus {
+                outline: none;
+                border-color: #667eea;
+                box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+            }
+            
+            .checkbox-group {
+                display: flex;
+                align-items: center;
+                margin-bottom: 20px;
+            }
+            
+            input[type="checkbox"] {
+                margin-right: 8px;
+                cursor: pointer;
+            }
+            
+            .checkbox-group label {
+                margin: 0;
+                cursor: pointer;
+            }
+            
+            button {
+                width: 100%;
+                padding: 12px;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                border: none;
+                border-radius: 5px;
+                font-size: 16px;
+                font-weight: 600;
+                cursor: pointer;
+                transition: transform 0.2s;
+            }
+            
+            button:hover {
+                transform: translateY(-2px);
+            }
+            
+            button:active {
+                transform: translateY(0);
+            }
+            
+            .alert {
+                padding: 12px;
+                margin-bottom: 20px;
+                border-radius: 5px;
+                font-size: 14px;
+            }
+            
+            .alert-error {
+                background: #fee;
+                color: #c33;
+                border: 1px solid #fcc;
+            }
+            
+            .alert-success {
+                background: #efe;
+                color: #3c3;
+                border: 1px solid #cfc;
+            }
+            
+            .register-link {
+                text-align: center;
+                margin-top: 20px;
+                font-size: 14px;
+                color: #666;
+            }
+            
+            .register-link a {
+                color: #667eea;
+                text-decoration: none;
+                font-weight: 600;
+            }
+            
+            .register-link a:hover {
+                text-decoration: underline;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Secure Login</h1>
+            
+            <?php if (isset($_GET['logout'])): ?>
+                <div class="alert alert-success">
+                    You have been logged out successfully.
+                </div>
+            <?php endif; ?>
+            
+            <form method="POST" action="">
+                <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrfToken); ?>">
+                
+                <div class="form-group">
+                    <label for="username">Username</label>
+                    <input 
+                        type="text" 
+                        id="username" 
+                        name="username" 
+                        required 
+                        autocomplete="username"
+                        placeholder="Enter your username"
+                    >
+                </div>
+                
+                <div class="form-group">
+                    <label for="password">Password</label>
+                    <input 
+                        type="password" 
+                        id="password" 
+                        name="password" 
+                        required 
+                        autocomplete="current-password"
+                        placeholder="Enter your password"
+                    >
+                </div>
+                
+                <div class="checkbox-group">
+                    <input 
+                        type="checkbox" 
+                        id="remember_me" 
+                        name="remember_me"
+                    >
+                    <label for="remember_me">Remember me for 30 days</label>
+                </div>
+                
+                <button type="submit">Login</button>
+            </form>
+            
+            <div class="register-link">
+                Don't have an account? <a href="register.php">Register here</a>
+            </div>
+        </div>
+    </body>
+    </html>
+    <?php
+}
+
+// Main execution
+$response = [];
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $response = handleLogin();
+}
+
+// Display form
+displayLoginForm();
+?>
