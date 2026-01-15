@@ -1,11 +1,12 @@
 ﻿<?php
-session_start();
-if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'teacher') { header("Location: login.php"); exit(); }
-include 'db.php';
-
+// file: report_overview.php
 // =========================================================
 // PART 1: LOGIC การคำนวณ (คงเดิม 100% ห้ามแก้ไข)
 // =========================================================
+session_start();
+// ตรวจสอบสิทธิ์ (ถ้า header.php ตรวจซ้ำก็ไม่เป็นไร แต่ใส่ไว้กันเหนียวใน Logic ส่วนนี้ครับ)
+if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'teacher') { header("Location: login.php"); exit(); }
+include_once 'db.php'; // ใช้ include_once ป้องกัน error ซ้ำ
 
 // 1. ดึง Config ของวิชาและโหมดการคำนวณ
 $sql_info = "SELECT * FROM tb_course_info LIMIT 1";
@@ -121,200 +122,182 @@ $eval_result = "ปรับปรุง"; $eval_color = "#dc3545"; $eval_bg = "
 if ($percent_good >= 90) { $eval_result = "ดีเยี่ยม"; $eval_color = "#198754"; $eval_bg = "rgba(25, 135, 84, 0.1)"; $eval_icon = "fa-trophy"; }
 elseif ($percent_good >= 65) { $eval_result = "ดี"; $eval_color = "#0d6efd"; $eval_bg = "rgba(13, 110, 253, 0.1)"; $eval_icon = "fa-thumbs-up"; }
 elseif ($percent_good >= 50) { $eval_result = "พอใช้"; $eval_color = "#ffc107"; $eval_bg = "rgba(255, 193, 7, 0.1)"; $eval_icon = "fa-circle-check"; }
+
+// =========================================================
+// PART 2: เรียก HEADER (เริ่มแสดงผล)
+// =========================================================
+include 'header.php';
 ?>
 
-<!DOCTYPE html>
-<html lang="th">
-<head>
-    <meta charset="UTF-8">
-    <title>สรุปผลสัมฤทธิ์ทางการเรียน</title>
-    <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;600;700&family=Poppins:wght@400;600;700&display=swap" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <style>
-        :root { --pink-brand: #ff007f; --dark-bg: #1a1a1a; --card-shadow: 0 4px 15px rgba(0,0,0,0.05); }
-        body { font-family: 'Sarabun', sans-serif; background-color: #f8f9fa; }
-        .sidebar-container { display: flex; min-height: 100vh; }
-        .content-area { flex-grow: 1; padding: 25px; }
+<style>
+    :root { --pink-brand: #ff007f; --dark-bg: #1a1a1a; --card-shadow: 0 4px 15px rgba(0,0,0,0.05); }
+    
+    /* KPI Banner Section */
+    .kpi-banner {
+        background: white; border-radius: 15px; padding: 20px;
+        box-shadow: var(--card-shadow); margin-bottom: 25px;
+        display: flex; justify-content: space-around; align-items: center;
+        border-bottom: 4px solid var(--pink-brand);
+    }
+    .kpi-item { text-align: center; }
+    .kpi-val { display: block; font-size: 1.8rem; font-weight: 700; color: #333; font-family: 'Poppins', sans-serif; }
+    .kpi-label { font-size: 0.85rem; color: #6c757d; text-transform: uppercase; letter-spacing: 0.5px; }
 
-        /* KPI Banner Section */
-        .kpi-banner {
-            background: white; border-radius: 15px; padding: 20px;
-            box-shadow: var(--card-shadow); margin-bottom: 25px;
-            display: flex; justify-content: space-around; align-items: center;
-            border-bottom: 4px solid var(--pink-brand);
-        }
-        .kpi-item { text-align: center; }
-        .kpi-val { display: block; font-size: 1.8rem; font-weight: 700; color: #333; font-family: 'Poppins', sans-serif; }
-        .kpi-label { font-size: 0.85rem; color: #6c757d; text-transform: uppercase; letter-spacing: 0.5px; }
+    /* Quality Box */
+    .quality-summary-box {
+        background: white; border-radius: 15px; padding: 20px;
+        box-shadow: var(--card-shadow); margin-bottom: 25px;
+        display: flex; align-items: center; justify-content: space-between;
+        background: linear-gradient(135deg, #ffffff 0%, #fdfdfd 100%);
+    }
+    .eval-status { display: flex; align-items: center; gap: 20px; }
+    .eval-icon-circle {
+        width: 60px; height: 60px; border-radius: 50%;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 1.8rem; color: white;
+    }
+    .eval-text h3 { margin: 0; font-weight: 700; color: #333; }
+    .eval-text p { margin: 0; color: #6c757d; font-size: 0.9rem; }
 
-        /* New Quality Box */
-        .quality-summary-box {
-            background: white; border-radius: 15px; padding: 20px;
-            box-shadow: var(--card-shadow); margin-bottom: 25px;
-            display: flex; align-items: center; justify-content: space-between;
-            background: linear-gradient(135deg, #ffffff 0%, #fdfdfd 100%);
-        }
-        .eval-status {
-            display: flex; align-items: center; gap: 20px;
-        }
-        .eval-icon-circle {
-            width: 60px; height: 60px; border-radius: 50%;
-            display: flex; align-items: center; justify-content: center;
-            font-size: 1.8rem; color: white;
-        }
-        .eval-text h3 { margin: 0; font-weight: 700; color: #333; }
-        .eval-text p { margin: 0; color: #6c757d; font-size: 0.9rem; }
+    /* Table Alignment */
+    .table-card { background: white; border-radius: 15px; overflow: hidden; box-shadow: var(--card-shadow); }
+    .table-custom { width: 100%; border-collapse: separate; border-spacing: 0; margin-bottom: 0; }
+    .table-custom thead th {
+        background-color: var(--dark-bg); color: white;
+        padding: 12px; text-align: center !important; vertical-align: middle;
+        font-size: 0.85rem; font-weight: 500; border-bottom: 3px solid var(--pink-brand);
+    }
+    .table-custom td { 
+        padding: 12px; border-bottom: 1px solid #eee; 
+        vertical-align: middle; text-align: center !important; 
+        font-size: 0.95rem;
+    }
+    .table-custom tbody tr:hover td { background-color: #fffafc; }
+    
+    .badge-subj { background: #f0f0f0; color: #333; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; margin-top: 4px; display: inline-block; }
+    .val-focus { font-weight: 700; color: #333; }
+    .row-total { background-color: #f8f9fa; font-weight: bold; }
+    .row-percent { background-color: #f1f3f5; font-weight: bold; color: #495057; font-size: 0.9rem; }
+</style>
 
-        /* Table Alignment */
-        .table-card { background: white; border-radius: 15px; overflow: hidden; box-shadow: var(--card-shadow); }
-        .table-custom { width: 100%; border-collapse: separate; border-spacing: 0; margin-bottom: 0; }
-        .table-custom thead th {
-            background-color: var(--dark-bg); color: white;
-            padding: 12px; text-align: center !important; vertical-align: middle;
-            font-size: 0.85rem; font-weight: 500; border-bottom: 3px solid var(--pink-brand);
-        }
-        /* [FIXED] จัดทุกอย่างกึ่งกลางตามความต้องการ */
-        .table-custom td { 
-            padding: 12px; border-bottom: 1px solid #eee; 
-            vertical-align: middle; text-align: center !important; 
-            font-size: 0.95rem;
-        }
-        .table-custom tbody tr:hover td { background-color: #fffafc; }
-        
-        .badge-subj { background: #f0f0f0; color: #333; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; margin-top: 4px; display: inline-block; }
-        .val-focus { font-weight: 700; color: #333; }
-        .row-total { background-color: #f8f9fa; font-weight: bold; }
-        .row-percent { background-color: #f1f3f5; font-weight: bold; color: #495057; font-size: 0.9rem; }
-    </style>
-</head>
-<body>
-    <div class="sidebar-container">
-        <?php include 'sidebar.php'; ?>
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h4 class="fw-bold mb-0 text-dark"><i class="fa-solid fa-chart-line text-pink-brand me-2"></i> สรุปผลสัมฤทธิ์ทางการเรียน (KPI)</h4>
+    <div class="text-muted small">Academic Achievement Report</div>
+</div>
 
-        <div class="content-area">
-            
-            <div class="d-flex justify-content-between align-items-center mb-4">
-                <h4 class="fw-bold mb-0 text-dark"><i class="fa-solid fa-chart-line text-pink-brand me-2"></i> สรุปผลสัมฤทธิ์ทางการเรียน (KPI)</h4>
-                <div class="text-muted small">Academic Achievement Report</div>
-            </div>
+<div class="kpi-banner">
+    <div class="kpi-item">
+        <span class="kpi-val"><?php echo number_format($total_students); ?></span>
+        <span class="kpi-label">นักเรียนทั้งหมด</span>
+    </div>
+    <div class="vr opacity-25"></div>
+    <div class="kpi-item">
+        <span class="kpi-val text-primary"><?php echo number_format($percent_good, 1); ?>%</span>
+        <span class="kpi-label">ผ่านเกณฑ์คุณภาพ (3-4)</span>
+    </div>
+    <div class="vr opacity-25"></div>
+    <div class="kpi-item">
+        <span class="kpi-val text-success"><?php echo number_format($avg_gpax, 2); ?></span>
+        <span class="kpi-label">เกรดเฉลี่ยรวม (GPAX)</span>
+    </div>
+    <div class="vr opacity-25"></div>
+    <div class="kpi-item">
+        <span class="kpi-val text-danger"><?php echo $grade_counts_total['0']; ?></span>
+        <span class="kpi-label">จำนวนที่ติด 0</span>
+    </div>
+</div>
 
-            <div class="kpi-banner">
-                <div class="kpi-item">
-                    <span class="kpi-val"><?php echo number_format($total_students); ?></span>
-                    <span class="kpi-label">นักเรียนทั้งหมด</span>
-                </div>
-                <div class="vr opacity-25"></div>
-                <div class="kpi-item">
-                    <span class="kpi-val text-primary"><?php echo number_format($percent_good, 1); ?>%</span>
-                    <span class="kpi-label">ผ่านเกณฑ์คุณภาพ (3-4)</span>
-                </div>
-                <div class="vr opacity-25"></div>
-                <div class="kpi-item">
-                    <span class="kpi-val text-success"><?php echo number_format($avg_gpax, 2); ?></span>
-                    <span class="kpi-label">เกรดเฉลี่ยรวม (GPAX)</span>
-                </div>
-                <div class="vr opacity-25"></div>
-                <div class="kpi-item">
-                    <span class="kpi-val text-danger"><?php echo $grade_counts_total['0']; ?></span>
-                    <span class="kpi-label">จำนวนที่ติด 0</span>
-                </div>
-            </div>
-
-            <div class="quality-summary-box">
-                <div class="eval-status">
-                    <div class="eval-icon-circle" style="background-color: <?php echo $eval_color; ?>;">
-                        <i class="fa-solid <?php echo $eval_icon; ?>"></i>
-                    </div>
-                    <div class="eval-text">
-                        <p>ผลการประเมินคุณภาพการจัดการเรียนการสอน</p>
-                        <h3>ระดับคุณภาพ: <span style="color: <?php echo $eval_color; ?>;"><?php echo $eval_result; ?></span></h3>
-                    </div>
-                </div>
-                <div class="eval-meta text-end">
-                    <div class="fw-bold h5 mb-0" style="color: <?php echo $eval_color; ?>;"><?php echo number_format($percent_good, 2); ?>%</div>
-                    <small class="text-muted">ร้อยละของนักเรียนที่ได้ระดับดีขึ้นไป</small>
-                </div>
-            </div>
-
-            <div class="table-card">
-                <div class="table-responsive">
-                    <table class="table-custom">
-                        <thead>
-                            <tr>
-                                <th rowspan="2">ห้องเรียน / วิชา</th>
-                                <th rowspan="2">นร.</th>
-                                <th colspan="8">จำนวนนักเรียนแยกตามระดับเกรด</th>
-                                <th rowspan="2">X̄ (Mean)</th>
-                                <th rowspan="2">S.D.</th>
-                            </tr>
-                            <tr>
-                                <th style="background:#198754">4</th>
-                                <th style="background:#198754">3.5</th>
-                                <th style="background:#198754">3</th>
-                                <th style="background:#ffc107; color:black;">2.5</th>
-                                <th style="background:#ffc107; color:black;">2</th>
-                                <th style="background:#ffc107; color:black;">1.5</th>
-                                <th style="background:#dc3545">1</th>
-                                <th style="background:#dc3545">0</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php foreach ($rooms_data as $r): ?>
-                            <tr>
-                                <td>
-                                    <div class="fw-bold"><?php echo $r['name']; ?></div>
-                                    <div class="badge-subj"><?php echo $r['subject_code']; ?></div>
-                                </td>
-                                <td><?php echo $r['n']; ?></td>
-                                <td class="val-focus"><?php echo $r['counts']['4']; ?></td>
-                                <td><?php echo $r['counts']['3.5']; ?></td>
-                                <td><?php echo $r['counts']['3']; ?></td>
-                                <td><?php echo $r['counts']['2.5']; ?></td>
-                                <td><?php echo $r['counts']['2']; ?></td>
-                                <td><?php echo $r['counts']['1.5']; ?></td>
-                                <td class="text-danger"><?php echo $r['counts']['1']; ?></td>
-                                <td class="bg-danger bg-opacity-10 text-danger fw-bold"><?php echo $r['counts']['0']; ?></td>
-                                <td class="val-focus bg-light"><?php echo number_format($r['mean'], 2); ?></td>
-                                <td class="text-muted bg-light"><?php echo number_format($r['sd'], 2); ?></td>
-                            </tr>
-                            <?php endforeach; ?>
-                        </tbody>
-                        <tfoot>
-                            <tr class="row-total">
-                                <td class="text-center">รวมทั้งหมด</td>
-                                <td><?php echo $total_students; ?></td>
-                                <td><?php echo $grade_counts_total['4']; ?></td>
-                                <td><?php echo $grade_counts_total['3.5']; ?></td>
-                                <td><?php echo $grade_counts_total['3']; ?></td>
-                                <td><?php echo $grade_counts_total['2.5']; ?></td>
-                                <td><?php echo $grade_counts_total['2']; ?></td>
-                                <td><?php echo $grade_counts_total['1.5']; ?></td>
-                                <td><?php echo $grade_counts_total['1']; ?></td>
-                                <td><?php echo $grade_counts_total['0']; ?></td>
-                                <td>-</td>
-                                <td>-</td>
-                            </tr>
-                            <tr class="row-percent">
-                                <td class="text-center">คิดเป็นร้อยละ</td>
-                                <td>100%</td>
-                                <td><?php echo ($total_students>0) ? number_format(($grade_counts_total['4']/$total_students)*100, 2) : 0; ?></td>
-                                <td><?php echo ($total_students>0) ? number_format(($grade_counts_total['3.5']/$total_students)*100, 2) : 0; ?></td>
-                                <td><?php echo ($total_students>0) ? number_format(($grade_counts_total['3']/$total_students)*100, 2) : 0; ?></td>
-                                <td><?php echo ($total_students>0) ? number_format(($grade_counts_total['2.5']/$total_students)*100, 2) : 0; ?></td>
-                                <td><?php echo ($total_students>0) ? number_format(($grade_counts_total['2']/$total_students)*100, 2) : 0; ?></td>
-                                <td><?php echo ($total_students>0) ? number_format(($grade_counts_total['1.5']/$total_students)*100, 2) : 0; ?></td>
-                                <td><?php echo ($total_students>0) ? number_format(($grade_counts_total['1']/$total_students)*100, 2) : 0; ?></td>
-                                <td><?php echo ($total_students>0) ? number_format(($grade_counts_total['0']/$total_students)*100, 2) : 0; ?></td>
-                                <td>-</td>
-                                <td>-</td>
-                            </tr>
-                        </tfoot>
-                    </table>
-                </div>
-            </div>
-
+<div class="quality-summary-box">
+    <div class="eval-status">
+        <div class="eval-icon-circle" style="background-color: <?php echo $eval_color; ?>;">
+            <i class="fa-solid <?php echo $eval_icon; ?>"></i>
+        </div>
+        <div class="eval-text">
+            <p>ผลการประเมินคุณภาพการจัดการเรียนการสอน</p>
+            <h3>ระดับคุณภาพ: <span style="color: <?php echo $eval_color; ?>;"><?php echo $eval_result; ?></span></h3>
         </div>
     </div>
-</body>
-</html>
+    <div class="eval-meta text-end">
+        <div class="fw-bold h5 mb-0" style="color: <?php echo $eval_color; ?>;"><?php echo number_format($percent_good, 2); ?>%</div>
+        <small class="text-muted">ร้อยละของนักเรียนที่ได้ระดับดีขึ้นไป</small>
+    </div>
+</div>
+
+<div class="table-card">
+    <div class="table-responsive">
+        <table class="table-custom">
+            <thead>
+                <tr>
+                    <th rowspan="2">ห้องเรียน / วิชา</th>
+                    <th rowspan="2">นร.</th>
+                    <th colspan="8">จำนวนนักเรียนแยกตามระดับเกรด</th>
+                    <th rowspan="2">X̄ (Mean)</th>
+                    <th rowspan="2">S.D.</th>
+                </tr>
+                <tr>
+                    <th style="background:#198754">4</th>
+                    <th style="background:#198754">3.5</th>
+                    <th style="background:#198754">3</th>
+                    <th style="background:#ffc107; color:black;">2.5</th>
+                    <th style="background:#ffc107; color:black;">2</th>
+                    <th style="background:#ffc107; color:black;">1.5</th>
+                    <th style="background:#dc3545">1</th>
+                    <th style="background:#dc3545">0</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php foreach ($rooms_data as $r): ?>
+                <tr>
+                    <td>
+                        <div class="fw-bold"><?php echo $r['name']; ?></div>
+                        <div class="badge-subj"><?php echo $r['subject_code']; ?></div>
+                    </td>
+                    <td><?php echo $r['n']; ?></td>
+                    <td class="val-focus"><?php echo $r['counts']['4']; ?></td>
+                    <td><?php echo $r['counts']['3.5']; ?></td>
+                    <td><?php echo $r['counts']['3']; ?></td>
+                    <td><?php echo $r['counts']['2.5']; ?></td>
+                    <td><?php echo $r['counts']['2']; ?></td>
+                    <td><?php echo $r['counts']['1.5']; ?></td>
+                    <td class="text-danger"><?php echo $r['counts']['1']; ?></td>
+                    <td class="bg-danger bg-opacity-10 text-danger fw-bold"><?php echo $r['counts']['0']; ?></td>
+                    <td class="val-focus bg-light"><?php echo number_format($r['mean'], 2); ?></td>
+                    <td class="text-muted bg-light"><?php echo number_format($r['sd'], 2); ?></td>
+                </tr>
+                <?php endforeach; ?>
+            </tbody>
+            <tfoot>
+                <tr class="row-total">
+                    <td class="text-center">รวมทั้งหมด</td>
+                    <td><?php echo $total_students; ?></td>
+                    <td><?php echo $grade_counts_total['4']; ?></td>
+                    <td><?php echo $grade_counts_total['3.5']; ?></td>
+                    <td><?php echo $grade_counts_total['3']; ?></td>
+                    <td><?php echo $grade_counts_total['2.5']; ?></td>
+                    <td><?php echo $grade_counts_total['2']; ?></td>
+                    <td><?php echo $grade_counts_total['1.5']; ?></td>
+                    <td><?php echo $grade_counts_total['1']; ?></td>
+                    <td><?php echo $grade_counts_total['0']; ?></td>
+                    <td>-</td>
+                    <td>-</td>
+                </tr>
+                <tr class="row-percent">
+                    <td class="text-center">คิดเป็นร้อยละ</td>
+                    <td>100%</td>
+                    <td><?php echo ($total_students>0) ? number_format(($grade_counts_total['4']/$total_students)*100, 2) : 0; ?></td>
+                    <td><?php echo ($total_students>0) ? number_format(($grade_counts_total['3.5']/$total_students)*100, 2) : 0; ?></td>
+                    <td><?php echo ($total_students>0) ? number_format(($grade_counts_total['3']/$total_students)*100, 2) : 0; ?></td>
+                    <td><?php echo ($total_students>0) ? number_format(($grade_counts_total['2.5']/$total_students)*100, 2) : 0; ?></td>
+                    <td><?php echo ($total_students>0) ? number_format(($grade_counts_total['2']/$total_students)*100, 2) : 0; ?></td>
+                    <td><?php echo ($total_students>0) ? number_format(($grade_counts_total['1.5']/$total_students)*100, 2) : 0; ?></td>
+                    <td><?php echo ($total_students>0) ? number_format(($grade_counts_total['1']/$total_students)*100, 2) : 0; ?></td>
+                    <td><?php echo ($total_students>0) ? number_format(($grade_counts_total['0']/$total_students)*100, 2) : 0; ?></td>
+                    <td>-</td>
+                    <td>-</td>
+                </tr>
+            </tfoot>
+        </table>
+    </div>
+</div>
+
+<?php include 'footer.php'; ?>

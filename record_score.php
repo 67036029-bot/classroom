@@ -1,5 +1,6 @@
 ﻿<?php
-// record_score.php - Paste from Excel + Smart Compare Import
+// file: record_score.php
+// แก้ไขปัญหา 500 Error: ลบ tag [source] และปรับปรุง Query ให้ไม่ Load โหดเกินไป
 ini_set('memory_limit', '512M');
 session_start();
 if (!isset($_SESSION['role']) || $_SESSION['role'] !== 'teacher') { header("Location: login.php"); exit(); }
@@ -19,32 +20,42 @@ if (isset($_GET['action']) && $_GET['action'] == 'save_batch') {
     $conn->begin_transaction();
     $count = 0;
     try {
+        // เตรียม Statement เพื่อความเร็วและความปลอดภัย
+        $stmt_check = $conn->prepare("SELECT score_id FROM tb_score WHERE std_id = ? AND work_id = ?");
+        $stmt_update = $conn->prepare("UPDATE tb_score SET score_point = ? WHERE std_id = ? AND work_id = ?");
+        $stmt_insert = $conn->prepare("INSERT INTO tb_score (std_id, work_id, score_point) VALUES (?, ?, ?)");
+        $stmt_delete = $conn->prepare("DELETE FROM tb_score WHERE std_id = ? AND work_id = ?");
+        $stmt_max = $conn->prepare("SELECT full_score FROM tb_work WHERE work_id = ?");
+
         foreach ($data as $item) {
             $std_id = intval($item['std_id']);
             $work_id = intval($item['work_id']);
             $score = trim($item['score']);
 
-            // Validate Score
-            $q_max = $conn->query("SELECT full_score FROM tb_work WHERE work_id = $work_id");
-            if ($q_max->num_rows == 0) continue;
-            $max = floatval($q_max->fetch_assoc()['full_score']);
+            // ดึงคะแนนเต็ม (ใช้ Prepared Statment)
+            $stmt_max->bind_param("i", $work_id);
+            $stmt_max->execute();
+            $res_max = $stmt_max->get_result();
+            if ($res_max->num_rows == 0) continue;
+            $max = floatval($res_max->fetch_assoc()['full_score']);
 
             if ($score === "") {
-                $conn->query("DELETE FROM tb_score WHERE std_id = $std_id AND work_id = $work_id");
+                $stmt_delete->bind_param("ii", $std_id, $work_id);
+                $stmt_delete->execute();
                 $count++;
             } else {
                 $score_val = floatval($score);
                 if ($score_val >= 0 && $score_val <= $max) {
-                    // Upsert (Insert or Update)
-                    $chk = $conn->query("SELECT score_id FROM tb_score WHERE std_id = $std_id AND work_id = $work_id");
-                    if ($chk->num_rows > 0) {
-                        $stmt = $conn->prepare("UPDATE tb_score SET score_point = ? WHERE std_id = ? AND work_id = ?");
-                        $stmt->bind_param("dii", $score_val, $std_id, $work_id);
+                    // Check exist
+                    $stmt_check->bind_param("ii", $std_id, $work_id);
+                    $stmt_check->execute();
+                    if ($stmt_check->get_result()->num_rows > 0) {
+                        $stmt_update->bind_param("dii", $score_val, $std_id, $work_id);
+                        $stmt_update->execute();
                     } else {
-                        $stmt = $conn->prepare("INSERT INTO tb_score (std_id, work_id, score_point) VALUES (?, ?, ?)");
-                        $stmt->bind_param("iid", $std_id, $work_id, $score_val);
+                        $stmt_insert->bind_param("iid", $std_id, $work_id, $score_val);
+                        $stmt_insert->execute();
                     }
-                    $stmt->execute();
                     $count++;
                 }
             }
@@ -64,24 +75,27 @@ if (isset($_GET['action']) && $_GET['action'] == 'save_batch') {
 $show_preview = false;
 if (isset($_POST['upload_preview_btn']) && isset($_FILES['csv_file'])) {
     $file = $_FILES['csv_file']['tmp_name'];
-    $room_filter = $_POST['current_room_hidden']; // รับค่าห้องปัจจุบันเพื่อดึงข้อมูลเดิมมาเทียบ
+    $room_filter = $_POST['current_room_hidden']; 
 
     if (is_uploaded_file($file)) {
         if (($handle = fopen($file, "r")) !== FALSE) {
             
-            // 1. Prepare Data for Comparison (ดึงคะแนนเดิมใน DB มาเก็บไว้ก่อน)
-            $db_scores = []; // [std_code][work_id] = current_score
+            // ดึงคะแนนเดิม (Optimized Query)
+            $db_scores = []; 
             $sql_old = "SELECT s.std_code, sc.work_id, sc.score_point 
                         FROM tb_students s 
                         LEFT JOIN tb_score sc ON s.id = sc.std_id 
-                        WHERE s.room = '$room_filter'";
-            $res_old = $conn->query($sql_old);
+                        WHERE s.room = ?";
+            $stmt = $conn->prepare($sql_old);
+            $stmt->bind_param("s", $room_filter);
+            $stmt->execute();
+            $res_old = $stmt->get_result();
             while($row = $res_old->fetch_assoc()) {
                 if($row['work_id']) $db_scores[$row['std_code']][$row['work_id']] = $row['score_point'];
             }
 
-            // 2. Scan Header
-            $work_map = []; // [IndexCSV => WorkID]
+            // Scan Header
+            $work_map = []; 
             $header_names = [];
             $header_found = false;
             $std_code_idx = -1;
@@ -90,25 +104,20 @@ if (isset($_POST['upload_preview_btn']) && isset($_FILES['csv_file'])) {
                 // Remove BOM
                 if (isset($row[0]) && substr($row[0], 0, 3) == pack('CCC', 0xef, 0xbb, 0xbf)) { $row[0] = substr($row[0], 3); }
 
-                // Check for [ID:xxx]
                 $has_id_tag = false;
                 foreach ($row as $col) { if (strpos($col, '[ID:') !== false) { $has_id_tag = true; break; } }
 
                 if ($has_id_tag) {
                     foreach ($row as $index => $col_name) {
-                        // Map Work ID
                         if (preg_match('/\[ID:(\d+)\]/', $col_name, $matches)) { 
-                            $work_map[$index] = $matches[1]; 
+                            $work_map[$index] = $matches[1];
                             $header_names[$index] = $col_name;
                         }
-                        // Map Student Code Column (ค้นหาคอลัมน์รหัส)
                         if (strpos($col_name, 'รหัสนักเรียน') !== false || strpos(strtolower($col_name), 'code') !== false) {
                             $std_code_idx = $index;
                         }
                     }
-                    // ถ้าหาคอลัมน์รหัสไม่เจอ ให้เดาว่าเป็น Index 2 (Room, No, Code, Name)
-                    if ($std_code_idx == -1) $std_code_idx = 2; 
-                    
+                    if ($std_code_idx == -1) $std_code_idx = 2;
                     $header_found = true;
                     break; 
                 }
@@ -116,32 +125,30 @@ if (isset($_POST['upload_preview_btn']) && isset($_FILES['csv_file'])) {
 
             if ($header_found && !empty($work_map)) {
                 $preview_data = [];
+                // เตรียม Query นักเรียนครั้งเดียวเพื่อความเร็ว
+                $stmt_std = $conn->prepare("SELECT id, firstname, lastname FROM tb_students WHERE std_code = ?");
                 
                 while (($data = fgetcsv($handle)) !== FALSE) {
                     $std_code = isset($data[$std_code_idx]) ? trim($data[$std_code_idx]) : "";
                     if ($std_code == "") continue;
 
-                    // Lookup Student Info
-                    $q_std = $conn->query("SELECT id, firstname, lastname, room FROM tb_students WHERE std_code = '$std_code'");
-                    if ($q_std->num_rows > 0) {
-                        $std_row = $q_std->fetch_assoc();
+                    $stmt_std->bind_param("s", $std_code);
+                    $stmt_std->execute();
+                    $res_std = $stmt_std->get_result();
+                    
+                    if ($res_std->num_rows > 0) {
+                        $std_row = $res_std->fetch_assoc();
                         $row_changes = [];
                         $has_change = false;
 
                         foreach ($work_map as $col_idx => $w_id) {
                             $new_val = isset($data[$col_idx]) ? trim($data[$col_idx]) : "";
-                            $old_val = isset($db_scores[$std_code][$w_id]) ? $db_scores[$std_code][$w_id] : ""; // Default "" if no score
+                            $old_val = isset($db_scores[$std_code][$w_id]) ? $db_scores[$std_code][$w_id] : ""; 
 
-                            // Logic Comparison (เทียบค่า)
-                            // ถ้าใน Excel ว่าง ("") แปลว่าไม่แก้อะไร (Ignore) หรือจะให้ลบ? -> โดยทั่วไป Excel ว่างคือไม่ยุ่ง
-                            // แต่ถ้าอยากให้ลบ ต้องกำหนดสัญลักษณ์พิเศษ
-                            // ในที่นี้สมมติ: Excel ว่าง = ไม่ทำอะไร
-                            
                             if ($new_val !== "") {
-                                // แปลงเป็น float เพื่อเทียบค่าตัวเลข (เช่น 10.00 กับ 10)
                                 $diff = false;
-                                if ($old_val === "") { $diff = true; } // เดิมไม่มี ใหม่มี
-                                else { if (floatval($new_val) != floatval($old_val)) $diff = true; } // ค่าไม่เท่ากัน
+                                if ($old_val === "") { $diff = true; } 
+                                else { if (floatval($new_val) != floatval($old_val)) $diff = true; } 
 
                                 if ($diff) {
                                     $row_changes[] = [
@@ -181,23 +188,32 @@ if (isset($_POST['confirm_import_btn']) && isset($_SESSION['score_import_preview
     $conn->begin_transaction();
     $saved_count = 0;
     try {
+        $stmt_check = $conn->prepare("SELECT score_id FROM tb_score WHERE std_id = ? AND work_id = ?");
+        $stmt_update = $conn->prepare("UPDATE tb_score SET score_point = ? WHERE std_id = ? AND work_id = ?");
+        $stmt_insert = $conn->prepare("INSERT INTO tb_score (std_id, work_id, score_point) VALUES (?, ?, ?)");
+        $stmt_max = $conn->prepare("SELECT full_score FROM tb_work WHERE work_id = ?");
+
         foreach ($preview_data as $p) {
             $std_id = $p['std_id'];
             foreach ($p['changes'] as $chg) {
                 $work_id = $chg['work_id'];
                 $score = floatval($chg['new']);
                 
-                // Final Max Check
-                $q_max = $conn->query("SELECT full_score FROM tb_work WHERE work_id = $work_id");
-                if ($q_max->num_rows > 0) {
-                    $max = floatval($q_max->fetch_assoc()['full_score']);
+                $stmt_max->bind_param("i", $work_id);
+                $stmt_max->execute();
+                $res_max = $stmt_max->get_result();
+
+                if ($res_max->num_rows > 0) {
+                    $max = floatval($res_max->fetch_assoc()['full_score']);
                     if ($score <= $max && $score >= 0) {
-                        // Upsert Logic
-                        $chk = $conn->query("SELECT score_id FROM tb_score WHERE std_id = $std_id AND work_id = $work_id");
-                        if ($chk->num_rows > 0) {
-                            $conn->query("UPDATE tb_score SET score_point = '$score' WHERE std_id = $std_id AND work_id = $work_id");
+                        $stmt_check->bind_param("ii", $std_id, $work_id);
+                        $stmt_check->execute();
+                        if ($stmt_check->get_result()->num_rows > 0) {
+                            $stmt_update->bind_param("dii", $score, $std_id, $work_id);
+                            $stmt_update->execute();
                         } else {
-                            $conn->query("INSERT INTO tb_score (std_id, work_id, score_point) VALUES ('$std_id', '$work_id', '$score')");
+                            $stmt_insert->bind_param("iid", $std_id, $work_id, $score);
+                            $stmt_insert->execute();
                         }
                         $saved_count++;
                     }
@@ -223,18 +239,19 @@ if (isset($_POST['confirm_import_btn']) && isset($_SESSION['score_import_preview
 }
 
 // =========================================================
-// PART 4: DATA FETCHING (ปกติ)
+// PART 4: DATA FETCHING (OPTIMIZED)
 // =========================================================
 $sel_room = isset($_GET['room']) ? $_GET['room'] : "";
 $sql_rooms = "SELECT DISTINCT room FROM tb_students ORDER BY room ASC";
 $res_rooms = $conn->query($sql_rooms);
-$works_list = []; $students_list = []; $scores_map = [];
+$works_list = []; $students_list = [];
+$scores_map = [];
 
 // ดึงระดับชั้นเพื่อใช้ Export
 $grades_available = [];
 $res_rooms->data_seek(0);
 while($r = $res_rooms->fetch_assoc()){
-    $g = explode('/', $r['room'])[0]; 
+    $g = explode('/', $r['room'])[0];
     if(!in_array($g, $grades_available)) $grades_available[] = $g;
 }
 $res_rooms->data_seek(0); 
@@ -242,20 +259,32 @@ $res_rooms->data_seek(0);
 if ($sel_room != "") {
     $parts = explode('/', $sel_room);
     $grade_part = isset($parts[0]) ? $parts[0] : ""; 
-    $sql_works = "SELECT * FROM tb_work WHERE target_room = 'all' OR target_room = 'grade:$grade_part' OR target_room = '$sel_room' ORDER BY work_type ASC, work_id ASC";
-    $res_works = $conn->query($sql_works);
+    // ดึงงาน
+    $stmt_w = $conn->prepare("SELECT * FROM tb_work WHERE target_room = 'all' OR target_room = ? OR target_room = ? ORDER BY work_type ASC, work_id ASC");
+    $target_grade_str = "grade:$grade_part";
+    $stmt_w->bind_param("ss", $target_grade_str, $sel_room);
+    $stmt_w->execute();
+    $res_works = $stmt_w->get_result();
     while($w = $res_works->fetch_assoc()) { $works_list[] = $w; }
 
-    $sql_stds = "SELECT * FROM tb_students WHERE room = '$sel_room' ORDER BY std_no ASC";
-    $res_stds = $conn->query($sql_stds);
+    // ดึงนักเรียน
+    $stmt_s = $conn->prepare("SELECT * FROM tb_students WHERE room = ? ORDER BY std_no ASC");
+    $stmt_s->bind_param("s", $sel_room);
+    $stmt_s->execute();
+    $res_stds = $stmt_s->get_result();
     while($s = $res_stds->fetch_assoc()) { $students_list[] = $s; }
 
+    // 🔥 OPTIMIZATION: ดึงคะแนนทีเดียวจบ ไม่วนลูป (แก้ 500 Error)
     if (count($students_list) > 0 && count($works_list) > 0) {
         $std_ids = array_column($students_list, 'id');
-        $std_ids_str = implode(',', $std_ids);
+        $std_ids_str = implode(',', $std_ids); // ปลอดภัยเพราะ array_column มาจาก DB ที่เป็น int
+        
+        // ดึงคะแนนทั้งหมดของคนในห้องนี้ทีเดียว
         $sql_scores = "SELECT std_id, work_id, score_point FROM tb_score WHERE std_id IN ($std_ids_str)";
         $res_scores = $conn->query($sql_scores);
-        while($sc = $res_scores->fetch_assoc()) { $scores_map[$sc['std_id']][$sc['work_id']] = $sc['score_point']; }
+        while($sc = $res_scores->fetch_assoc()) { 
+            $scores_map[$sc['std_id']][$sc['work_id']] = $sc['score_point']; 
+        }
     }
 }
 ?>
@@ -291,14 +320,13 @@ if ($sel_room != "") {
 
         .score-input { width: 100%; height: 32px; text-align: center; border: 1px solid transparent; background: transparent; font-weight: 600; color: #333; font-size: 0.9rem; cursor: pointer; }
         .score-input:focus { background: #fff; outline: 2px solid #0d6efd; z-index: 10; cursor: text; }
-        .score-input.changed { background-color: #d1e7dd !important; color: #0f5132; font-weight: bold; border: 1px solid #198754; } /* ไฮไลท์เขียว */
+        .score-input.changed { background-color: #d1e7dd !important; color: #0f5132; font-weight: bold; border: 1px solid #198754; } 
         
         .col-total { background-color: #f8f9fa; font-weight: 800; color: #333; text-align: center; min-width: 70px; border-left: 2px solid #dee2e6; }
         .form-select-custom { border-radius: 50px; font-weight: bold; height: 38px; }
         .pulse { animation: pulse-animation 1.5s infinite; }
         @keyframes pulse-animation { 0% { transform: scale(1); } 50% { transform: scale(1.05); } 100% { transform: scale(1); } }
 
-        /* Compare Modal Style */
         .compare-row { border-bottom: 1px solid #eee; }
         .val-old { text-decoration: line-through; color: #adb5bd; font-size: 0.85rem; margin-right: 5px; }
         .val-new { color: #198754; font-weight: bold; font-size: 1rem; }
@@ -460,44 +488,31 @@ if ($sel_room != "") {
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
     let isDirty = false;
-
     // --- 1. Paste from Excel Feature ---
     document.addEventListener('paste', function(e) {
-        // เช็คว่ากำลังโฟกัสที่ช่องกรอกคะแนนหรือไม่
         if (!e.target.classList.contains('score-input')) return;
-        
         e.preventDefault();
-        // เอาข้อมูลจาก Clipboard (รองรับ Excel/Sheets ที่คั่นด้วย Tab)
         const pasteData = (e.clipboardData || window.clipboardData).getData('text');
-        const rows = pasteData.trim().split('\n'); // แถว
+        const rows = pasteData.trim().split('\n');
         
         const startInput = e.target;
         const startTr = startInput.closest('tr');
-        const startTd = startInput.closest('td');
-        
-        // หาตำแหน่งเริ่มต้นในตาราง (Row Index, Cell Index)
         const allRows = Array.from(document.querySelectorAll('#scoreTable tbody tr'));
         const startRowIndex = allRows.indexOf(startTr);
-        
-        // หาตำแหน่งคอลัมน์ (นับเฉพาะ td ที่มี input)
         const allInputsInRow = Array.from(startTr.querySelectorAll('.score-input'));
         const startColIndex = allInputsInRow.indexOf(startInput);
 
         rows.forEach((rowStr, rIdx) => {
             const currentRow = allRows[startRowIndex + rIdx];
-            if (!currentRow) return; // หมดแถวแล้ว
-
-            const cols = rowStr.split('\t'); // คอลัมน์
+            if (!currentRow) return;
+            const cols = rowStr.split('\t');
             const inputsInCurrentRow = Array.from(currentRow.querySelectorAll('.score-input'));
-
             cols.forEach((val, cIdx) => {
                 const targetInput = inputsInCurrentRow[startColIndex + cIdx];
                 if (targetInput) {
                     const cleanVal = val.trim();
-                    // อัปเดตค่า (ถ้าไม่ว่าง)
                     if(cleanVal !== "") {
                         targetInput.value = cleanVal;
-                        // Trigger Event เพื่อเช็คสีเขียวและบันทึก
                         targetInput.dispatchEvent(new Event('input'));
                     }
                 }
@@ -505,24 +520,21 @@ if ($sel_room != "") {
         });
     });
 
-    // --- 2. Input Logic (Manual Save & Validation) ---
+    // --- 2. Input Logic ---
     document.querySelectorAll('.score-input').forEach(input => {
         input.addEventListener('input', function() {
             const currentVal = this.value.trim();
             const originalVal = this.dataset.original;
             const maxVal = parseFloat(this.dataset.max);
-
             if (currentVal !== "" && parseFloat(currentVal) > maxVal) {
                 Swal.fire({ icon: 'error', title: 'คะแนนเกิน!', text: `เต็ม ${maxVal}`, timer: 1000, showConfirmButton: false });
                 this.value = ""; return;
             }
-
             if (currentVal !== originalVal) { this.classList.add('changed'); setDirty(true); } 
             else { this.classList.remove('changed'); checkIfAnyDirty(); }
             updateRowTotal(this.closest('tr'));
         });
 
-        // Keyboard Navigation
         input.addEventListener('keydown', function(e) {
             const inputs = Array.from(document.querySelectorAll('.score-input'));
             const index = inputs.indexOf(this);
@@ -546,7 +558,8 @@ if ($sel_room != "") {
 
     function checkIfAnyDirty() { const changed = document.querySelectorAll('.score-input.changed'); setDirty(changed.length > 0); }
     function updateRowTotal(tr) {
-        let total = 0; tr.querySelectorAll('.score-input').forEach(inp => { let v = parseFloat(inp.value); if (!isNaN(v)) total += v; });
+        let total = 0;
+        tr.querySelectorAll('.score-input').forEach(inp => { let v = parseFloat(inp.value); if (!isNaN(v)) total += v; });
         tr.querySelector('.total-cell').innerText = parseFloat(total.toFixed(2));
     }
 
@@ -555,9 +568,11 @@ if ($sel_room != "") {
         if (changedInputs.length === 0) return;
         let payload = [];
         changedInputs.forEach(inp => { payload.push({ std_id: inp.dataset.std, work_id: inp.dataset.work, score: inp.value }); });
+        
         const btn = document.getElementById('btnSave');
         const originalText = btn.innerHTML;
         btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> ...'; btn.disabled = true;
+        
         fetch('record_score.php?action=save_batch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
         .then(res => res.json()).then(data => {
             if (data.status === 'success') {
